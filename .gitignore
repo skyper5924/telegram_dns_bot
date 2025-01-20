@@ -1,0 +1,6 @@
+venv/
+.idea
+*.pyc
+*.swp
+bot_usage.log
+settings.py

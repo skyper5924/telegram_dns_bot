@@ -1,0 +1,7 @@
+geoip2>=4.0.0
+dnspython>=1.16.0
+ppdeep>=20200505
+py-tlsh>=4.5.0
+tld>=0.9.1
+idna>=2.8
+

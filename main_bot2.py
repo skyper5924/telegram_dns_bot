@@ -2,14 +2,12 @@ import asyncio
 import logging
 import subprocess
 import json
-#from os import getenv
-
-from aiogram import Bot, Dispatcher, html
+from aiogram import Bot, Dispatcher, html, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
-from aiogram.types import Message
-from settings import TOKEN
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from settings import TOKEN, ADMIN
 
 # Настройка логирования
 logging.basicConfig(
@@ -19,27 +17,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Telegram ID для обратной связи
+ADMIN_ID = ADMIN
 
-# Bot token can be obtained via https://t.me/BotFather
-#TOKEN = getenv("BOT_TOKEN")
-
-# All handlers should be attached to the Router (or Dispatcher)
-
+# Инициализация диспетчера
 dp = Dispatcher()
+
+def get_main_keyboard():
+    """
+    Создает основную клавиатуру с кнопками.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Проверить домен")],
+            [KeyboardButton(text="Обратная связь")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False
+    )
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
     """
-    This handler receives messages with `/start` command
+    Этот хендлер обрабатывает сообщения с командой `/start`
     """
-    await message.answer(f"Привет, {html.bold(message.from_user.full_name)}! Отправь мне доменное имя, и я его проанализирую.")
+    keyboard = get_main_keyboard()
+    await message.answer(
+        f"Привет, {html.bold(message.from_user.full_name)}! Выберите действие:",
+        reply_markup=keyboard
+    )
 
 async def run_dnstwist(domain: str) -> list:
     """
-    Run the dnstwist.py script and return its parsed JSON output.
+    Запуск скрипта dnstwist.py и возврат результата в формате JSON.
     """
     try:
-        # Call the dnstwist.py script with the given domain
         process = await asyncio.create_subprocess_exec(
             "python", "dnstwist.py", "-r", "-w", domain, "-f", "json", "-t", "1000",
             stdout=subprocess.PIPE,
@@ -48,15 +60,15 @@ async def run_dnstwist(domain: str) -> list:
         stdout, stderr = await process.communicate()
 
         if process.returncode != 0:
-            return [f"Error: {stderr.decode().strip()}"]
+            return [f"Ошибка: {stderr.decode().strip()}"]
 
         return json.loads(stdout.decode().strip())
     except Exception as e:
-        return [f"Failed to run dnstwist.py: {e}"]
+        return [f"Не удалось запустить dnstwist.py: {e}"]
 
 async def format_results(results: list) -> str:
     """
-    Extract and format domain and whois_created from dnstwist results.
+    Форматирование результатов анализа dnstwist.
     """
     if isinstance(results, list):
         formatted = [f"{item['domain']}, Создан: {item.get('whois_created', 'N/A')}" for item in results if 'domain' in item]
@@ -65,41 +77,57 @@ async def format_results(results: list) -> str:
 
 async def send_long_message(chat_id: int, text: str, bot: Bot) -> None:
     """
-    Split a long message into parts and send them separately.
+    Отправка длинных сообщений в Telegram частями.
     """
-    limit = 4096  # Telegram message character limit
+    limit = 4096  # Лимит символов в сообщении Telegram
     for i in range(0, len(text), limit):
         await bot.send_message(chat_id=chat_id, text=text[i:i+limit])
 
 @dp.message()
-async def domain_handler(message: Message) -> None:
+async def handle_message(message: Message) -> None:
     """
-    Handle domain analysis requests.
+    Обработка сообщений для анализа доменов или обратной связи.
     """
-    domain = message.text.strip()
-    if not domain:
-        await message.answer("Пожалуйста введите корректное доменное имя.")
-        return
+    keyboard = get_main_keyboard()
 
-    await message.answer("Выполняю поиск, пожалуйста, подождите...")
+    if message.text == "Проверить домен":
+        await message.answer("Введите доменное имя для анализа:", reply_markup=keyboard)
 
-    # Run the dnstwist.py script and get the result
-    results = await run_dnstwist(domain)
+    elif message.text == "Обратная связь":
+        await message.answer("Пожалуйста, отправьте ваше сообщение, и я передам его администратору.", reply_markup=types.ForceReply())
 
-    # Format the results
-    formatted_results = await format_results(results)
+    elif message.reply_to_message and "Пожалуйста, отправьте ваше сообщение" in message.reply_to_message.text:
+        # Обработка обратной связи
+        logger.info(f"Обратная связь от {message.from_user.full_name} (@{message.from_user.username}): {message.text}")
+        await message.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"Новое сообщение от {message.from_user.full_name} (@{message.from_user.username}):\n\n{message.text}"
+        )
+        await message.answer("Спасибо за вашу обратную связь!", reply_markup=keyboard)
+    else:
+        # Обработка доменов
+        domain = message.text.strip()
+        if not domain:
+            await message.answer("Пожалуйста, введите корректное доменное имя.", reply_markup=keyboard)
+            return
 
-    # Send the result back to the user in parts if necessary
-    await send_long_message(chat_id=message.chat.id, text=f"Результат анализа для:  {html.bold(domain)}:\n{formatted_results}", bot=message.bot)
+        logger.info(f"Запрос анализа домена от {message.from_user.full_name} (@{message.from_user.username}): {domain}")
+        await message.answer("Выполняю поиск, пожалуйста, подождите...", reply_markup=keyboard)
+
+        results = await run_dnstwist(domain)
+        formatted_results = await format_results(results)
+
+        await send_long_message(
+            chat_id=message.chat.id,
+            text=f"Результат анализа для: {html.bold(domain)}:\n{formatted_results}",
+            bot=message.bot
+        )
 
 async def main() -> None:
-    # Initialize Bot instance with default bot properties which will be passed to all API calls
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-
-    # And then run events dispatching
+    print("Бот успешно запущен и готов к работе!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
-

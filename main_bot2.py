@@ -53,7 +53,7 @@ async def run_dnstwist(domain: str) -> list:
     """
     try:
         process = await asyncio.create_subprocess_exec(
-            "python", "dnstwist.py", "-r", "-w", domain, "-f", "json", "-t", "1000",
+            "python", "dnstwist.py", "-r", "-w", domain, "-f", "json", "-t", "5000",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
         )
@@ -66,13 +66,26 @@ async def run_dnstwist(domain: str) -> list:
     except Exception as e:
         return [f"Не удалось запустить dnstwist.py: {e}"]
 
+
 async def format_results(results: list) -> str:
     """
     Форматирование результатов анализа dnstwist.
     """
     if isinstance(results, list):
-        formatted = [f"{item['domain']}, Создан: {item.get('whois_created', 'N/A')}" for item in results if 'domain' in item]
+        # Разделяем результаты на те, у которых есть дата, и те, у которых её нет
+        with_date = [item for item in results if 'domain' in item and 'whois_created' in item and item['whois_created']]
+        without_date = [item for item in results if
+                        'domain' in item and ('whois_created' not in item or not item['whois_created'])]
+
+        # Сортируем по дате создания (от новых к старым)
+        sorted_with_date = sorted(with_date, key=lambda x: x['whois_created'], reverse=True)
+
+        # Форматируем результат
+        formatted = [f"{item['domain']}, Создан: {item['whois_created']}" for item in sorted_with_date]
+        formatted += [f"{item['domain']}, Создан: N/A" for item in without_date]
+
         return "\n".join(formatted)
+
     return "\n".join(results)
 
 async def send_long_message(chat_id: int, text: str, bot: Bot) -> None:

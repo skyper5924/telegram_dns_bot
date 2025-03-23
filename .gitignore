@@ -4,3 +4,4 @@ venv/
 *.swp
 bot_usage.log
 settings.py
+stats.json
